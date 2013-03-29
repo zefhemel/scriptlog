@@ -2,19 +2,9 @@
 
 var _ = require("underscore");
 
-function Workspace() {
-    this.edb = [];
-    this.installedRules = [];
-    this.factCache = [];
-
-    this.predicates = {}; // name: [arg0, arg1, ..., fromRule: id]
-}
-
-var lastRuleId = 0;
-
-function Rule(head, body) {
-    this.head = head;
-    this.body = body;
+function Rule(headAtom, bodyAtoms) {
+    this.headAtom = headAtom;
+    this.bodyAtoms = bodyAtoms;
 }
 
 Rule.prototype = {
@@ -22,16 +12,20 @@ Rule.prototype = {
         var rule = this;
         var predicatesAddedTo = {};
         this.generateBindings(ws).forEach(function(binding) {
-            var newFact = substitute(rule.head, binding);
+            var newFact = substitute(rule.headAtom, binding);
             predicatesAddedTo[newFact[0]] = true;
-            ws.addFact(newFact, rule);
+            var derivedFromFacts = rule.bodyAtoms.map(function(goal) {
+                return substitute(goal, binding);
+            });
+            //console.log(bodyBindings);
+            ws.addFact(newFact, derivedFromFacts);
         });
         Object.keys(predicatesAddedTo).forEach(function(predicate) {
-            ws.removeDuplicates(predicate);
+            ws.getPredicate(predicate).compact();
         });
     },
     generateBindings: function(ws) {
-        var goals = this.body.map(function(goal) {
+        var goals = this.bodyAtoms.map(function(goal) {
             return ws.query(goal);
         });
         return goals.slice(1).reduce(unifyBindingArrays, goals[0]);
@@ -41,28 +35,70 @@ Rule.prototype = {
     }
 };
 
-function Fact(args, source) {
-    for (var i = 0; i < args.length; i++) {
-        this[i] = args[i];
+function Atom(array, derivedFrom) {
+    for (var i = 0; i < array.length; i++) {
+        this[i] = array[i];
     }
-    this.source = source;
+    this.length = array.length;
+    this.derivedFrom = derivedFrom;
+    this.hash = Atom.hashCode(this);
 }
 
-Fact.asString = function(fact) {
-    var args = [];
-    for (var i = 0; fact[i] !== undefined; i++) {
-        args.push(fact[i]);
+Atom.prototype = {
+    toString: function() {
+        return Atom.hashCode(this);
     }
-    return args.join(",");
 };
+
+Atom.hashCode = function(atom) {
+    var args = [];
+    for (var i = 1; i < atom.length; i++) {
+        args.push(atom[i]);
+    }
+    return atom[0] + "(" + args.join(",") + ")";
+};
+
+function Predicate(name) {
+    this.name = name;
+    this.facts = [];
+}
+
+Predicate.prototype = {
+    count: function() {
+        return this.facts.length;
+    },
+    get: function(index) {
+        return this.facts[index];
+    },
+    add: function(atom) {
+        this.facts.push(atom);
+    },
+    eachFact: function(fn) {
+        this.facts.forEach(fn);
+    },
+    compact: function() {
+        this.facts = _.uniq(this.facts, false, Atom.hashCode);
+    }
+};
+
+function Workspace() {
+    this.installedRules = [];
+    this.factCache = [];
+    this.predicates = {};
+}
 
 Workspace.prototype = {
     addRule: function(rule) {
         this.installedRules.push(rule);
     },
-    insert: function(fact) {
-        this.edb.push(fact);
-        this.addFact(fact);
+    insert: function(atom) {
+        this.addFact(atom);
+    },
+    remove: function(atom) {
+        var predicate = this.getPredicate(atom);
+    },
+    eachPredicate: function(fn) {
+        _.values(this.predicates).forEach(fn);
     },
     fixpoint: function(iteration) {
         iteration = iteration || 1;
@@ -83,72 +119,60 @@ Workspace.prototype = {
     countFacts: function() {
         var count = 0;
         var that = this;
-        Object.keys(this.predicates).forEach(function(predicate) {
-            count += that.predicates[predicate].length;
+        this.eachPredicate(function(predicate) {
+            count += predicate.count();
         });
         return count;
     },
-    rebuild: function() {
-        var that = this;
-        // Flush
-        this.predicates = {};
-        // Reinsert all EDB facts
-        this.edb.forEach(function(fact) {
-            that.addFact(fact);
-        });
-        this.fixpoint();
-    },
     query: function(query) {
         var results = [];
-        var predicate = query[0];
-        var facts = this.predicates[predicate];
-        if(!facts) {
+        var predicateName = query[0];
+        var predicate = this.predicates[predicateName];
+        if (!predicate) {
             return [];
         }
-        var args = query.slice(1);
-        for (var i = 0; i < facts.length; i++) {
-            var fact = facts[i];
-            var unification = unify(args, fact);
+        for (var i = 0; i < predicate.count(); i++) {
+            var atom = predicate.get(i);
+            var unification = unify(query, atom);
             if (unification) {
                 results.push(unification);
             }
         }
         return results;
     },
+    getPredicate: function(name) {
+        return this.predicates[name];
+    },
     // Private
-    removeDuplicates: function(predicate) {
-        this.predicates[predicate] = _.uniq(this.predicates[predicate], false, Fact.asString);
-    },
-    addFact: function(fact, source) {
-        var predicate = fact[0];
-        if (!this.predicates[predicate]) {
-            this.predicates[predicate] = [];
+    addFact: function(atom, derivedFrom) {
+        var predicateName = atom[0];
+        if (!this.getPredicate(predicateName)) {
+            this.predicates[predicateName] = new Predicate(predicateName);
         }
-        this.predicates[predicate].push(new Fact(fact.slice(1), source));
-    },
-    addFacts: function(facts, source) {
-        for (var i = 0; i < facts.length; i++) {
-            this.addFact(facts[i], source);
-        }
+        this.getPredicate(predicateName).add(new Atom(atom, derivedFrom));
     },
     toString: function() {
-        var ws = this;
         var s = "Rules\n========\n";
         this.installedRules.forEach(function(rule) {
             s += rule.toString() + "\n";
         });
         s += "\nFacts\n========\n";
-        Object.keys(this.predicates).forEach(function(predicate) {
-            s += predicate + ":\n";
-            var facts = ws.predicates[predicate];
-            facts.forEach(function(fact) {
-                s += "- " + Fact.asString(fact) + "\n";
+        this.eachPredicate(function(predicate) {
+            s += predicate.name + ":\n";
+            predicate.eachFact(function(atom) {
+                s += "- " + atom.toString() + " derived from " + (atom.derivedFrom ? atom.derivedFrom.map(function(atom) {
+                    return atom.toString();
+                }).join(", ") : "") + "\n";
             });
         });
         return s;
     }
 };
 
+/**
+ * @param query Atom
+ * @return Atom
+ */
 function substitute(query, bindings) {
     var result = [];
     for (var i = 0; i < query.length; i++) {
@@ -159,13 +183,22 @@ function substitute(query, bindings) {
             result.push(el);
         }
     }
-    return result;
+    return new Atom(result);
 }
 
+/**
+ * @param identifier string
+ * @return boolean
+ */
 function isVar(identifier) {
     return identifier[0].toUpperCase() == identifier[0];
 }
 
+/**
+ * @param arr1 array of mapping objects
+ * @param arr2 array of mapping objects
+ * @return array of mapping objects
+ */
 function unifyBindingArrays(arr1, arr2) {
     // This is important as items may be added on the fly
     var arr1Length = arr1.length;
@@ -184,6 +217,11 @@ function unifyBindingArrays(arr1, arr2) {
     return results;
 }
 
+/**
+ * @param arr1 mapping object
+ * @param arr2 mapping object
+ * @return mapping object or false
+ */
 function unifyBindings(bindings1, bindings2) {
     // New object for binding
     var obj = {};
@@ -218,14 +256,19 @@ function unifyBindings(bindings1, bindings2) {
     }
 }
 
-function unify(query, fact) {
+/**
+ * @param query Atom
+ * @param atom Atom
+ * @return mapping object
+ */
+function unify(query, atom) {
     var obj = {};
     for (var i = 0; i < query.length; i++) {
         var el = query[i];
-        if (!isVar(el) && el !== fact[i]) {
+        if (!isVar(el) && el !== atom[i]) {
             return false;
         } else if (isVar(el)) {
-            obj[el] = fact[i];
+            obj[el] = atom[i];
         }
     }
     return obj;
@@ -233,5 +276,6 @@ function unify(query, fact) {
 
 module.exports = {
     Workspace: Workspace,
-    Rule: Rule
+    Rule: Rule,
+    Atom: Atom
 };
