@@ -10,43 +10,76 @@ function Rule(headAtom, bodyAtoms) {
 Rule.prototype = {
     applyToWorkspace: function(ws) {
         var rule = this;
-        var predicatesAddedTo = {};
+        var headAtom = this.headAtom;
+        var predicateToAddTo = ws.getPredicate(headAtom[0]);
         this.generateBindings(ws).forEach(function(binding) {
-            var newFact = substitute(rule.headAtom, binding);
-            predicatesAddedTo[newFact[0]] = true;
+            var newFact = substitute(headAtom, binding);
             var derivedFromFacts = rule.bodyAtoms.map(function(goal) {
-                return substitute(goal, binding);
+                return Atom.hashCode(substitute(goal, binding));
             });
-            //console.log(bodyBindings);
-            ws.addFact(newFact, derivedFromFacts);
-        });
-        Object.keys(predicatesAddedTo).forEach(function(predicate) {
-            ws.getPredicate(predicate).compact();
+            if (headAtom.delta === '+') {
+                ws.insert(newFact);
+            } else if (headAtom.delta === "-") {
+                ws.remove(newFact);
+            } else {
+                // Have to do $insert, because it's a IDB
+                predicateToAddTo.$insert(new Atom(newFact, derivedFromFacts));
+            }
         });
     },
     generateBindings: function(ws) {
-        var goals = this.bodyAtoms.map(function(goal) {
-            return ws.query(goal);
+        var currentBindings;
+        this.bodyAtoms.forEach(function(goal, index) {
+            var ar = ws.query(goal, currentBindings);
+            if (index === 0) {
+                currentBindings = ar;
+            } else {
+                currentBindings = unifyBindingArrays(currentBindings, ar);
+            }
         });
-        return goals.slice(1).reduce(unifyBindingArrays, goals[0]);
+        return currentBindings;
     },
     toString: function() {
         return JSON.stringify(this, null, 4);
     }
 };
 
+/**
+ * @param derivedFrom are hashcodes
+ */
 function Atom(array, derivedFrom) {
-    for (var i = 0; i < array.length; i++) {
-        this[i] = array[i];
-    }
-    this.length = array.length;
-    this.derivedFrom = derivedFrom;
-    this.hash = Atom.hashCode(this);
+    this.init(array, derivedFrom);
 }
 
 Atom.prototype = {
+    init: function(array, derivedFrom) {
+        for (var i = 0; i < array.length; i++) {
+            this[i] = array[i];
+        }
+        this.length = array.length;
+        this.derivedFrom = derivedFrom || [];
+        this.hashCode = Atom.hashCode(this);
+    },
+    equals: function(other) {
+        return this.hashCode === other.hashCode;
+    },
+    addDerivedAtom: function(hashCode) {
+        var index = this.derivedFrom.indexOf(hashCode);
+        if(index === -1) {
+            this.derivedFrom.push(hashCode);
+        }
+    },
+    isFullyBound: function() {
+        for(var i = 0; i < this.length; i++) {
+            var el = this[i];
+            if(isVar(el)) {
+                return false;
+            }
+        }
+        return true;
+    },
     toString: function() {
-        return Atom.hashCode(this);
+        return this.hashCode;
     }
 };
 
@@ -58,47 +91,214 @@ Atom.hashCode = function(atom) {
     return atom[0] + "(" + args.join(",") + ")";
 };
 
-function Predicate(name) {
-    this.name = name;
-    this.facts = [];
+function DeltaAtom(delta, array) {
+    this.init(array);
+    this.delta = delta;
 }
 
-Predicate.prototype = {
+_.extend(DeltaAtom.prototype, Atom.prototype);
+
+function EDBPredicate(name) {
+    this.name = name;
+    this.facts = [];
+    this.hashToFact = {};
+}
+
+EDBPredicate.prototype = {
     count: function() {
         return this.facts.length;
     },
     get: function(index) {
         return this.facts[index];
     },
-    add: function(atom) {
-        this.facts.push(atom);
+    insert: function(atom) {
+        var foundAtom = this.find(atom);
+        if (!foundAtom) {
+            this.facts.push(atom);
+            this.hashToFact[atom.hashCode] = atom;
+        } else if (atom.derivedFrom.length > 0) {
+            for (var i = 0; i < atom.derivedFrom.length; i++) {
+                foundAtom.addDerivedAtom(atom.derivedFrom[i]);
+            }
+        }
     },
-    eachFact: function(fn) {
-        this.facts.forEach(fn);
+    query: function(query) {
+        var facts = this.facts;
+        var results = [];
+        for (var i = 0; i < facts.length; i++) {
+            var atom = facts[i];
+            var unification = unify(query, atom);
+            if (unification) {
+                results.push(unification);
+            }
+        }
+        return results;
     },
-    compact: function() {
-        this.facts = _.uniq(this.facts, false, Atom.hashCode);
+    remove: function(atom) {
+        var fact = this.hashToFact[atom.hashCode];
+        if(fact === undefined) {
+            return;
+        }
+        this.facts.splice(this.facts.indexOf(fact), 1);
+        delete this.hashToFact[atom.hashCode];
+    },
+    removeFactsThatDependOn: function(atomToRemove, ws) {
+        var hashCodeToLookFor = atomToRemove.hashCode;
+        this.eachFact(function(atom) {
+            var hashIndex = atom.derivedFrom.indexOf(hashCodeToLookFor);
+            if(hashIndex !== -1) {
+                ws.remove(atom);
+            }
+        }, true); // Need to slice first, because we're possibly changing the list as we go
+    },
+    find: function(atom) {
+        var fact = this.hashToFact[atom.hashCode];
+        if (fact !== undefined) {
+            return fact;
+        } else {
+            return null;
+        }
+    },
+    contains: function(atom) {
+        return !!this.find(atom);
+    },
+    eachFact: function(fn, sliceFirst) {
+        var facts = sliceFirst ? this.facts.slice() : this.facts;
+        facts.forEach(fn);
+    },
+    toString: function() {
+        var s = '';
+        this.eachFact(function(atom) {
+            s += "- " + atom.toString() + " derived from " + (atom.derivedFrom ? atom.derivedFrom.join(", ") : "") + "\n";
+        });
+        return s;
     }
+};
+
+function IDBPredicate(name) {
+    this.name = name;
+    this.facts = [];
+    this.hashToFact = {};
+}
+
+_.extend(IDBPredicate.prototype, EDBPredicate.prototype);
+
+IDBPredicate.prototype.$insert = IDBPredicate.prototype.insert;
+
+IDBPredicate.prototype.insert = function() {
+    throw new Error("Cannot insert into IDB Predicate");
+};
+
+function BuiltinPredicate(name, fn) {
+    this.name = name;
+    this.fn = fn;
+}
+
+_.extend(BuiltinPredicate.prototype, IDBPredicate.prototype);
+
+BuiltinPredicate.prototype.query = function(query, currentBindings) {
+    var results = [];
+    var fn = this.fn;
+    currentBindings = currentBindings || [{}];
+    currentBindings.forEach(function(binding) {
+        var boundQuery = substitute(query, binding);
+        fn(boundQuery, binding).forEach(function(result) {
+            results.push(result);
+        });
+    });
+    return results;
+};
+
+BuiltinPredicate.prototype.count = function() {
+    return 0;
+};
+
+BuiltinPredicate.prototype.removeFactsThatDependOn = function() {
+    return;
+};
+
+BuiltinPredicate.prototype.toString = function() {
+    return "[Builtin]";
 };
 
 function Workspace() {
     this.installedRules = [];
-    this.factCache = [];
-    this.predicates = {};
+    this.predicates = {
+        "int:add": new BuiltinPredicate("int:add", function(query) {
+            var result = {};
+            result[query[3]] = query[1] + query[2];
+            return [result];
+        }),
+        "int:lessThan": new BuiltinPredicate("int:lessThan", function(query, binding) {
+            if (query[1] < query[2]) {
+                return [binding];
+            } else {
+                return [];
+            }
+        }),
+    };
 }
 
 Workspace.prototype = {
     addRule: function(rule) {
         this.installedRules.push(rule);
     },
-    insert: function(atom) {
-        this.addFact(atom);
+    addEDBPredicate: function(name) {
+        if (this.getPredicate(name)) {
+            throw Error("Predicate already exists: " + name);
+        }
+        this.predicates[name] = new EDBPredicate(name);
     },
-    remove: function(atom) {
-        var predicate = this.getPredicate(atom);
+    addIDBPredicate: function(name) {
+        if (this.getPredicate(name)) {
+            throw Error("Predicate already exists: " + name);
+        }
+        this.predicates[name] = new IDBPredicate(name);
+    },
+    insert: function(atom, derivedFrom) {
+        var predicate = this.getPredicate(atom[0]);
+        if (!predicate) {
+            throw Error("Predicate not defined: " + atom[0]);
+        }
+        predicate.insert(new Atom(atom, derivedFrom));
+    },
+    remove: function(atomToRemove) {
+        var ws = this;
+        if(!atomToRemove.isFullyBound()) {
+            this.query(atomToRemove).forEach(function(bindings) {
+                var boundAtom = substitute(atomToRemove, bindings);
+                ws.remove(boundAtom);
+            });
+        } else {
+            var predicateName = atomToRemove[0];
+            var predicate = this.getPredicate(predicateName);
+            predicate.remove(atomToRemove);
+            this.eachPredicate(function(predicate) {
+                predicate.removeFactsThatDependOn(atomToRemove, ws);
+            });
+        }
+    },
+    contains: function(fact) {
+        var predicateName = fact[0];
+        return this.getPredicate(predicateName).contains(fact);
     },
     eachPredicate: function(fn) {
         _.values(this.predicates).forEach(fn);
+    },
+    fixpointRules: function(rules) {
+        if(!_.isArray(rules)) {
+            rules = [rules];
+        }
+        var ws = this;
+        // Install first
+        rules.forEach(function(rule) {
+            ws.installedRules.push(rule);
+        });
+        ws.fixpoint();
+        // And then remove again
+        rules.forEach(function(rule) {
+            ws.installedRules.splice(ws.installedRules.indexOf(rule), 1);
+        });
     },
     fixpoint: function(iteration) {
         iteration = iteration || 1;
@@ -118,52 +318,30 @@ Workspace.prototype = {
     },
     countFacts: function() {
         var count = 0;
-        var that = this;
         this.eachPredicate(function(predicate) {
             count += predicate.count();
         });
         return count;
     },
-    query: function(query) {
-        var results = [];
+    query: function(query, bindings) {
         var predicateName = query[0];
         var predicate = this.predicates[predicateName];
-        if (!predicate) {
-            return [];
-        }
-        for (var i = 0; i < predicate.count(); i++) {
-            var atom = predicate.get(i);
-            var unification = unify(query, atom);
-            if (unification) {
-                results.push(unification);
-            }
-        }
-        return results;
+        return predicate.query(query, bindings);
     },
     getPredicate: function(name) {
         return this.predicates[name];
     },
     // Private
-    addFact: function(atom, derivedFrom) {
-        var predicateName = atom[0];
-        if (!this.getPredicate(predicateName)) {
-            this.predicates[predicateName] = new Predicate(predicateName);
-        }
-        this.getPredicate(predicateName).add(new Atom(atom, derivedFrom));
-    },
     toString: function() {
-        var s = "Rules\n========\n";
+        var s = "";
+        /*Rules\n========\n";
         this.installedRules.forEach(function(rule) {
             s += rule.toString() + "\n";
-        });
+        });*/
         s += "\nFacts\n========\n";
         this.eachPredicate(function(predicate) {
             s += predicate.name + ":\n";
-            predicate.eachFact(function(atom) {
-                s += "- " + atom.toString() + " derived from " + (atom.derivedFrom ? atom.derivedFrom.map(function(atom) {
-                    return atom.toString();
-                }).join(", ") : "") + "\n";
-            });
+            s += predicate.toString() + "\n";
         });
         return s;
     }
@@ -178,7 +356,7 @@ function substitute(query, bindings) {
     for (var i = 0; i < query.length; i++) {
         var el = query[i];
         if (isVar(el)) {
-            result.push(bindings[el] || el);
+            result.push(bindings[el] !== undefined ? bindings[el] : el);
         } else {
             result.push(el);
         }
@@ -191,7 +369,10 @@ function substitute(query, bindings) {
  * @return boolean
  */
 function isVar(identifier) {
-    return identifier[0].toUpperCase() == identifier[0];
+    if (typeof identifier !== "string") {
+        return false;
+    }
+    return identifier !== "_" && identifier[0].toUpperCase() === identifier[0];
 }
 
 /**
@@ -230,7 +411,7 @@ function unifyBindings(bindings1, bindings2) {
 
     Object.keys(bindings1).forEach(function(b) {
         // If it's set in the other binding, it has to be the same, otherwise FAIL
-        if (bindings2[b] && bindings1[b] !== bindings2[b]) {
+        if (bindings2[b] !== undefined && bindings1[b] !== bindings2[b]) {
             success = false;
             return;
         } else {
@@ -242,7 +423,7 @@ function unifyBindings(bindings1, bindings2) {
         return false;
     }
     Object.keys(bindings2).forEach(function(b) {
-        if (bindings1[b] && bindings2[b] !== bindings2[b]) {
+        if (bindings1[b] !== undefined && bindings2[b] !== bindings2[b]) {
             success = false;
             return;
         } else {
@@ -265,7 +446,7 @@ function unify(query, atom) {
     var obj = {};
     for (var i = 0; i < query.length; i++) {
         var el = query[i];
-        if (!isVar(el) && el !== atom[i]) {
+        if (!isVar(el) && el !== atom[i] && el !== "_") {
             return false;
         } else if (isVar(el)) {
             obj[el] = atom[i];
@@ -277,5 +458,15 @@ function unify(query, atom) {
 module.exports = {
     Workspace: Workspace,
     Rule: Rule,
-    Atom: Atom
+    Atom: Atom,
+    DeltaAtom: DeltaAtom,
+    atom: function() {
+        return new Atom(Array.prototype.slice.call(arguments));
+    },
+    deltaAtom: function(delta) {
+        return new DeltaAtom(delta, Array.prototype.slice.call(arguments, 1));
+    },
+    rule: function(headAtom) {
+        return new Rule(headAtom, Array.prototype.slice.call(arguments, 1));
+    }
 };
