@@ -30,7 +30,7 @@ Rule.prototype = {
     generateBindings: function(ws) {
         var currentBindings;
         this.bodyAtoms.forEach(function(goal, index) {
-            var ar = ws.query(goal, currentBindings);
+            var ar = ws.queryBindings(goal, currentBindings);
             if (index === 0) {
                 currentBindings = ar;
             } else {
@@ -122,7 +122,8 @@ EDBPredicate.prototype = {
             }
         }
     },
-    query: function(query) {
+    // Returns mappings
+    queryBindings: function(query) {
         var facts = this.facts;
         var results = [];
         for (var i = 0; i < facts.length; i++) {
@@ -130,6 +131,18 @@ EDBPredicate.prototype = {
             var unification = unify(query, atom);
             if (unification) {
                 results.push(unification);
+            }
+        }
+        return results;
+    },
+    // Returns atoms themselves
+    query: function(query) {
+        var facts = this.facts;
+        var results = [];
+        for (var i = 0; i < facts.length; i++) {
+            var atom = facts[i];
+            if(unify(query, atom)) {
+                results.push(atom);
             }
         }
         return results;
@@ -196,7 +209,7 @@ function BuiltinPredicate(name, fn) {
 
 _.extend(BuiltinPredicate.prototype, IDBPredicate.prototype);
 
-BuiltinPredicate.prototype.query = function(query, currentBindings) {
+BuiltinPredicate.prototype.queryBindings = function(query, currentBindings) {
     var results = [];
     var fn = this.fn;
     currentBindings = currentBindings || [{}];
@@ -265,9 +278,8 @@ Workspace.prototype = {
     remove: function(atomToRemove) {
         var ws = this;
         if(!atomToRemove.isFullyBound()) {
-            this.query(atomToRemove).forEach(function(bindings) {
-                var boundAtom = substitute(atomToRemove, bindings);
-                ws.remove(boundAtom);
+            this.query(atomToRemove).forEach(function(atom) {
+                ws.remove(atom);
             });
         } else {
             var predicateName = atomToRemove[0];
@@ -277,6 +289,17 @@ Workspace.prototype = {
                 predicate.removeFactsThatDependOn(atomToRemove, ws);
             });
         }
+    },
+    upsert: function(atom) {
+        // First remove atom with all same values, except last key
+        var atomToRemoveArray = [];
+        for(var i = 0; i < atom.length - 1; i++) {
+            atomToRemoveArray.push(atom[i]);
+        }
+        atomToRemoveArray.push("?");
+        var atomToRemove = new Atom(atomToRemoveArray);
+        this.remove(atomToRemove);
+        this.insert(atom);
     },
     contains: function(fact) {
         var predicateName = fact[0];
@@ -322,6 +345,11 @@ Workspace.prototype = {
             count += predicate.count();
         });
         return count;
+    },
+    queryBindings: function(query, bindings) {
+        var predicateName = query[0];
+        var predicate = this.predicates[predicateName];
+        return predicate.queryBindings(query, bindings);
     },
     query: function(query, bindings) {
         var predicateName = query[0];
@@ -372,7 +400,7 @@ function isVar(identifier) {
     if (typeof identifier !== "string") {
         return false;
     }
-    return identifier !== "_" && identifier[0].toUpperCase() === identifier[0];
+    return identifier[0] === "?";
 }
 
 /**
@@ -446,9 +474,9 @@ function unify(query, atom) {
     var obj = {};
     for (var i = 0; i < query.length; i++) {
         var el = query[i];
-        if (!isVar(el) && el !== atom[i] && el !== "_") {
+        if (!isVar(el) && el !== atom[i]) {
             return false;
-        } else if (isVar(el)) {
+        } else if (isVar(el) && el !== "?") {
             obj[el] = atom[i];
         }
     }
