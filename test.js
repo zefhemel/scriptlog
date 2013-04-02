@@ -15,8 +15,11 @@ testDeltaRules();
 testWildCard();
 testExecRules();
 testUpsert();
+
+// Benchmark
 testInsertPerformance();
 testRemovePerformance();
+testUpsertPerformance();
 testRulePerformance();
 
 function basic() {
@@ -297,4 +300,17 @@ function testRulePerformance() {
     ws.fixpoint();
     assert(ws.contains(atom("ancestor", "p2", "p10")));
     console.log("Fixpointing on", numParents, "parents took: ", Date.now() - before, "ms");
+}
+
+function testUpsertPerformance() {
+    var ws = new Workspace();
+    ws.addEDBPredicate("age");
+    var names = ["pete", "jan", "steve", "roger", "hank", "frenkel", "john", "anne", "emma", "samantha"];
+    var before = Date.now();
+    names.forEach(function(name) {
+        for(var i = 0; i < 1000; i++) {
+            ws.upsert(atom("age", name + i, 20));
+        }
+    });
+    console.log("Upserting", names.length * 1000, "names took", Date.now() - before, "ms");
 }

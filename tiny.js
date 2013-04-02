@@ -117,21 +117,28 @@ DeltaAtom.prototype = new Atom([]);
 
 function EDBPredicate(name) {
     this.name = name;
-    this.facts = [];
+    this.facts = new Trie();
     this.hashToFact = {};
+}
+
+function getQueryPrefix(query) {
+    var index = query.hashCode.indexOf("?");
+    if(index === -1) {
+        return query.hashCode;
+    } else {
+        return query.hashCode.substring(0, index);
+    }
 }
 
 EDBPredicate.prototype = {
     count: function() {
-        return this.facts.length;
-    },
-    get: function(index) {
-        return this.facts[index];
+        //return this.facts.length;
+        return Object.keys(this.hashToFact).length;
     },
     insert: function(atom, ws) {
         var foundAtom = this.find(atom);
         if (!foundAtom) {
-            this.facts.push(atom);
+            this.facts.insert(atom.hashCode);
             this.hashToFact[atom.hashCode] = atom;
         } else if (atom.derivedFrom.length > 0) {
             for (var i = 0; i < atom.derivedFrom.length; i++) {
@@ -144,9 +151,11 @@ EDBPredicate.prototype = {
      */
     queryBindings: function(query) {
         var facts = this.facts;
+        var hashToFact = this.hashToFact;
         var results = [];
-        for (var i = 0; i < facts.length; i++) {
-            var atom = facts[i];
+        var prefixMatches = facts.prefixMatches(getQueryPrefix(query));
+        for (var i = 0; i < prefixMatches.length; i++) {
+            var atom = hashToFact[prefixMatches[i]];
             var unification = unify(query, atom);
             if (unification) {
                 results.push(unification);
@@ -161,8 +170,10 @@ EDBPredicate.prototype = {
     query: function(query) {
         var facts = this.facts;
         var results = [];
-        for (var i = 0; i < facts.length; i++) {
-            var atom = facts[i];
+        var hashToFact = this.hashToFact;
+        var prefixMatches = facts.prefixMatches(getQueryPrefix(query));
+        for (var i = 0; i < prefixMatches.length; i++) {
+            var atom = hashToFact[prefixMatches[i]];
             if(unify(query, atom)) {
                 results.push(atom);
             }
@@ -174,7 +185,7 @@ EDBPredicate.prototype = {
         if(fact === undefined) {
             return;
         }
-        this.facts.splice(this.facts.indexOf(fact), 1);
+        this.facts.remove(atom.hashCode);
         delete this.hashToFact[atom.hashCode];
     },
     removeFactsThatDependOn: function(atomToRemove, ws) {
@@ -197,9 +208,8 @@ EDBPredicate.prototype = {
     contains: function(atom) {
         return !!this.find(atom);
     },
-    eachFact: function(fn, sliceFirst) {
-        var facts = sliceFirst ? this.facts.slice() : this.facts;
-        facts.forEach(fn);
+    eachFact: function(fn) {
+        this.facts.forEach(fn);
     },
     toString: function() {
         var s = '';
@@ -212,7 +222,7 @@ EDBPredicate.prototype = {
 
 function IDBPredicate(name) {
     this.name = name;
-    this.facts = [];
+    this.facts = new Trie();
     this.hashToFact = {};
 }
 

@@ -232,20 +232,26 @@ Trie.prototype = {
         }
         for(k in T.children) {
             child = T.children[k];
-            ret = ret.concat(child.getAllWords(str + k));
+            var childWords = child.getAllWords(str + k);
+            for(var i = 0; i < childWords.length; i++) {
+                ret.push(childWords[i]);
+            }
         }
         return ret;
+    },
+    
+    forEach: function(fn) {
+        this.getAllWords().forEach(fn);
     },
     
     /*
     * Autocomplete a given prefix
     *
-    * @method autoComplete
     * @param {String} str Prefix to be completed based on dictionary entries
     * @param {Integer} pos Current index of the prefix
     * @return {Array} Array of possible suggestions
     */
-    autoComplete: function(str, pos) {
+    prefixMatches: function(str, pos) {
         if(str.length == 0) {
             return [];
         }
@@ -265,7 +271,7 @@ Trie.prototype = {
         if(pos === str.length - 1) {
             return child.getAllWords(str);
         }
-        return child.autoComplete(str, pos + 1);
+        return child.prefixMatches(str, pos + 1);
     }
 };
 
