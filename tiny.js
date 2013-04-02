@@ -1,6 +1,6 @@
 // Adapted from: https://github.com/fkettelhoit/bottom-up-datalog-js
 
-var _ = require("underscore");
+var Trie = require("./trie");
 
 function Rule(headAtom, bodyAtoms) {
     this.headAtom = headAtom;
@@ -14,16 +14,17 @@ Rule.prototype = {
         var predicateToAddTo = ws.getPredicate(headAtom[0]);
         this.generateBindings(ws).forEach(function(binding) {
             var newFact = substitute(headAtom, binding);
-            var derivedFromFacts = rule.bodyAtoms.map(function(goal) {
-                return Atom.hashCode(substitute(goal, binding));
-            });
+            
             if (headAtom.delta === '+') {
-                ws.insert(newFact);
+                ws.insert(new Atom(newFact));
             } else if (headAtom.delta === "-") {
                 ws.remove(newFact);
             } else {
                 // Have to do $insert, because it's a IDB
-                predicateToAddTo.$insert(new Atom(newFact, derivedFromFacts));
+                rule.bodyAtoms.forEach(function(goal) {
+                    newFact.addDerivedAtom(Atom.hashCode(substitute(goal, binding)), ws);
+                });
+                predicateToAddTo.$insert(newFact, ws);
             }
         });
     },
@@ -47,26 +48,38 @@ Rule.prototype = {
 /**
  * @param derivedFrom are hashcodes
  */
-function Atom(array, derivedFrom) {
-    this.init(array, derivedFrom);
+function Atom(array) {
+    this.init(array);
 }
 
 Atom.prototype = {
-    init: function(array, derivedFrom) {
+    init: function(array) {
         for (var i = 0; i < array.length; i++) {
             this[i] = array[i];
         }
         this.length = array.length;
-        this.derivedFrom = derivedFrom || [];
+        // HashCodes for
+        this.derivedFrom = [];
+        this.resultedIn = []; // Inverse of derivedFrom
         this.hashCode = Atom.hashCode(this);
     },
     equals: function(other) {
         return this.hashCode === other.hashCode;
     },
-    addDerivedAtom: function(hashCode) {
+    addDerivedAtom: function(hashCode, ws) {
         var index = this.derivedFrom.indexOf(hashCode);
         if(index === -1) {
             this.derivedFrom.push(hashCode);
+            var resultedInAtom = ws.getPredicate(Atom.predicateNameFromHashCode(hashCode)).getFactByHashCode(hashCode);
+            if(resultedInAtom) {
+                resultedInAtom.addResultedIn(this.hashCode);
+            }
+        }
+    },
+    addResultedIn: function(hashCode) {
+        var index = this.resultedIn.indexOf(hashCode);
+        if(index === -1) {
+            this.resultedIn.push(hashCode);
         }
     },
     isFullyBound: function() {
@@ -91,12 +104,16 @@ Atom.hashCode = function(atom) {
     return atom[0] + "(" + args.join(",") + ")";
 };
 
+Atom.predicateNameFromHashCode = function(hashCode) {
+    return hashCode.substring(0, hashCode.indexOf("("));
+};
+
 function DeltaAtom(delta, array) {
     this.init(array);
     this.delta = delta;
 }
 
-_.extend(DeltaAtom.prototype, Atom.prototype);
+DeltaAtom.prototype = new Atom([]);
 
 function EDBPredicate(name) {
     this.name = name;
@@ -111,18 +128,20 @@ EDBPredicate.prototype = {
     get: function(index) {
         return this.facts[index];
     },
-    insert: function(atom) {
+    insert: function(atom, ws) {
         var foundAtom = this.find(atom);
         if (!foundAtom) {
             this.facts.push(atom);
             this.hashToFact[atom.hashCode] = atom;
         } else if (atom.derivedFrom.length > 0) {
             for (var i = 0; i < atom.derivedFrom.length; i++) {
-                foundAtom.addDerivedAtom(atom.derivedFrom[i]);
+                foundAtom.addDerivedAtom(atom.derivedFrom[i], ws);
             }
         }
     },
-    // Returns mappings
+    /**
+     * @return array of mappings (objects)
+     */
     queryBindings: function(query) {
         var facts = this.facts;
         var results = [];
@@ -134,6 +153,9 @@ EDBPredicate.prototype = {
             }
         }
         return results;
+    },
+    getFactByHashCode: function(hashCode) {
+        return this.hashToFact[hashCode];
     },
     // Returns atoms themselves
     query: function(query) {
@@ -194,7 +216,7 @@ function IDBPredicate(name) {
     this.hashToFact = {};
 }
 
-_.extend(IDBPredicate.prototype, EDBPredicate.prototype);
+IDBPredicate.prototype = new EDBPredicate();
 
 IDBPredicate.prototype.$insert = IDBPredicate.prototype.insert;
 
@@ -207,7 +229,7 @@ function BuiltinPredicate(name, fn) {
     this.fn = fn;
 }
 
-_.extend(BuiltinPredicate.prototype, IDBPredicate.prototype);
+BuiltinPredicate.prototype = new IDBPredicate();
 
 BuiltinPredicate.prototype.queryBindings = function(query, currentBindings) {
     var results = [];
@@ -232,6 +254,10 @@ BuiltinPredicate.prototype.removeFactsThatDependOn = function() {
 
 BuiltinPredicate.prototype.toString = function() {
     return "[Builtin]";
+};
+
+BuiltinPredicate.prototype.getFactByHashCode = function() {
+    return null;
 };
 
 function Workspace() {
@@ -268,12 +294,12 @@ Workspace.prototype = {
         }
         this.predicates[name] = new IDBPredicate(name);
     },
-    insert: function(atom, derivedFrom) {
+    insert: function(atom) {
         var predicate = this.getPredicate(atom[0]);
         if (!predicate) {
             throw Error("Predicate not defined: " + atom[0]);
         }
-        predicate.insert(new Atom(atom, derivedFrom));
+        predicate.insert(new Atom(atom), this);
     },
     remove: function(atomToRemove) {
         var ws = this;
@@ -284,9 +310,13 @@ Workspace.prototype = {
         } else {
             var predicateName = atomToRemove[0];
             var predicate = this.getPredicate(predicateName);
+            atomToRemove = predicate.find(atomToRemove);
             predicate.remove(atomToRemove);
-            this.eachPredicate(function(predicate) {
-                predicate.removeFactsThatDependOn(atomToRemove, ws);
+            atomToRemove.resultedIn.forEach(function(hashCode) {
+                var fact = ws.getPredicate(Atom.predicateNameFromHashCode(hashCode)).getFactByHashCode(hashCode);
+                if(fact) {
+                    ws.remove(fact);
+                }
             });
         }
     },
@@ -306,12 +336,12 @@ Workspace.prototype = {
         return this.getPredicate(predicateName).contains(fact);
     },
     eachPredicate: function(fn) {
-        _.values(this.predicates).forEach(fn);
+        var ws = this;
+        Object.keys(this.predicates).forEach(function(predicateName) {
+            fn(ws.predicates[predicateName]);
+        });
     },
     fixpointRules: function(rules) {
-        if(!_.isArray(rules)) {
-            rules = [rules];
-        }
         var ws = this;
         // Install first
         rules.forEach(function(rule) {
@@ -359,7 +389,10 @@ Workspace.prototype = {
     getPredicate: function(name) {
         return this.predicates[name];
     },
-    // Private
+    find: function(atom) {
+        var predicate = this.getPredicate(atom[0]);
+        return predicate.find(atom);
+    },
     toString: function() {
         var s = "";
         /*Rules\n========\n";
@@ -483,18 +516,24 @@ function unify(query, atom) {
     return obj;
 }
 
-module.exports = {
-    Workspace: Workspace,
-    Rule: Rule,
-    Atom: Atom,
-    DeltaAtom: DeltaAtom,
-    atom: function() {
-        return new Atom(Array.prototype.slice.call(arguments));
-    },
-    deltaAtom: function(delta) {
-        return new DeltaAtom(delta, Array.prototype.slice.call(arguments, 1));
-    },
-    rule: function(headAtom) {
-        return new Rule(headAtom, Array.prototype.slice.call(arguments, 1));
-    }
-};
+function atom() {
+    return new Atom(Array.prototype.slice.call(arguments));
+}
+function deltaAtom(delta) {
+    return new DeltaAtom(delta, Array.prototype.slice.call(arguments, 1));
+}
+function rule(headAtom) {
+    return new Rule(headAtom, Array.prototype.slice.call(arguments, 1));
+}
+
+if(typeof module !== "undefined") {
+    module.exports = {
+        Workspace: Workspace,
+        Rule: Rule,
+        Atom: Atom,
+        DeltaAtom: DeltaAtom,
+        atom: atom,
+        deltaAtom: deltaAtom,
+        rule: rule
+    };
+}

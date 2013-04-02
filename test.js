@@ -10,12 +10,14 @@ derivationRule();
 testBasicRemove();
 testDerivedRemove();
 testLongTraceRemove();
-testInsertPerformance();
 testBuiltin();
 testDeltaRules();
 testWildCard();
 testExecRules();
 testUpsert();
+testInsertPerformance();
+testRemovePerformance();
+testRulePerformance();
 
 function basic() {
     var ws = new Workspace();
@@ -42,18 +44,6 @@ function basic() {
     assert.equal(1, _.where(result, {"?x": "jan"}).length);
     assert.equal(1, _.where(result, {"?x": "antoinet"}).length);
     assert.equal(0, _.where(result, {"?x": "ben"}).length);
-}
-
-function testInsertPerformance() {
-    var before = Date.now();
-    var ws = new Workspace();
-    var itemsToInsert = 10000;
-    ws.addEDBPredicate("successor");
-    for(var i = 1; i <= itemsToInsert; i++) {
-        ws.insert(atom("successor", i-1, i));
-    }
-    ws.fixpoint();
-    console.log("Inserting", itemsToInsert, "items took:", Date.now()-before, "ms");
 }
 
 function derivationRule() {
@@ -120,6 +110,7 @@ function testDerivedRemove() {
     assert(ws.contains(atom("ancestor", "ben", "jan")));
     assert(ws.contains(atom("ancestor", "ben", "zef")));
     assert(ws.contains(atom("ancestor", "petra", "zef")));
+    //console.log(ws.predicates.parent);
     ws.remove(atom("parent", "ben", "jan"));
     check();
     ws.fixpoint();
@@ -227,8 +218,8 @@ function testExecRules() {
     assert(ws.contains(atom("successor", 1, 2)));
     assert(ws.contains(atom("lessthan", 1, 2)));
     
-    ws.fixpointRules(rule(deltaAtom("-", "successor", "?a", "?"),
-                          atom("lessthan", "?a", 5)));
+    ws.fixpointRules([rule(deltaAtom("-", "successor", "?a", "?"),
+                           atom("lessthan", "?a", 5))]);
     assert(!ws.contains(atom("successor", 1, 2)));
     assert(!ws.contains(atom("lessthan", 1, 2)));
     
@@ -260,4 +251,50 @@ function testUpsert() {
     ws.upsert(atom("age", "wouter", 26));
     assert(ws.contains(atom("age", "zef", 30)));
     assert(2, ws.getPredicate("age").count());
+}
+
+function testInsertPerformance() {
+    var before = Date.now();
+    var ws = new Workspace();
+    var itemsToInsert = 10000;
+    ws.addEDBPredicate("successor");
+    for(var i = 1; i <= itemsToInsert; i++) {
+        ws.insert(atom("successor", i-1, i));
+    }
+    ws.fixpoint();
+    console.log("Inserting", itemsToInsert, "items took:", Date.now()-before, "ms");
+}
+
+function testRemovePerformance() {
+    var ws = new Workspace();
+    var itemsToInsert = 10000;
+    ws.addEDBPredicate("successor");
+    for(var i = 1; i <= itemsToInsert; i++) {
+        ws.insert(atom("successor", i-1, i));
+    }
+    ws.fixpoint();
+    var before = Date.now();
+    for(i = 1; i <= itemsToInsert; i++) {
+        ws.remove(atom("successor", i-1, i));
+    }
+    console.log("Removing", itemsToInsert, "items took:", Date.now()-before, "ms");
+}
+
+function testRulePerformance() {
+    var ws = new Workspace();
+    ws.addEDBPredicate("parent");
+    ws.addIDBPredicate("ancestor");
+    ws.addRule(rule(atom("ancestor", "?a", "?b"), 
+                    atom("parent", "?a", "?b")));
+    ws.addRule(rule(atom("ancestor", "?a", "?c"), 
+                    atom("ancestor", "?a", "?b"),
+                    atom("ancestor", "?b", "?c")));
+    var numParents = 40;
+    for(var i = 0; i < numParents; i++) {
+        ws.insert(atom("parent", "p" + i, "p" + (i+1)));
+    }
+    var before = Date.now();
+    ws.fixpoint();
+    assert(ws.contains(atom("ancestor", "p2", "p10")));
+    console.log("Fixpointing on", numParents, "parents took: ", Date.now() - before, "ms");
 }
