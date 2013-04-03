@@ -3,6 +3,6 @@
     "description": "Super simple Datalog implementation",
     "version": "0.0.1",
     "dependencies": {
-        "underscore": "*"
+        "underscore": "*",
     }
 }

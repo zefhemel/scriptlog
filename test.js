@@ -2,6 +2,7 @@ var Workspace = require("./tiny").Workspace;
 var atom = require("./tiny").atom;
 var rule = require("./tiny").rule;
 var deltaAtom = require("./tiny").deltaAtom;
+var queryEventFilter = require("./tiny").queryEventFilter;
 var assert = require("assert");
 var _ = require("underscore");
 
@@ -15,6 +16,7 @@ testDeltaRules();
 testWildCard();
 testExecRules();
 testUpsert();
+testEvents();
 
 // Benchmark
 testInsertPerformance();
@@ -24,7 +26,6 @@ testRulePerformance();
 
 function basic() {
     var ws = new Workspace();
-    ws.addEDBPredicate("parent");
     ws.insert(atom("parent", "ben", "jan"));
     ws.insert(atom("parent", "petra", "jan"));
     ws.insert(atom("parent", "jan", "zef"));
@@ -32,12 +33,12 @@ function basic() {
     ws.insert(atom("parent", "antoinet", "wouter"));
     var result = ws.queryBindings(atom("parent", "jan", "zef"));
     assert.deepEqual([{}], result);
-    
+
     try {
         ws.insert(atom("doesntexist", 2));
         assert(false, "Shouldn't get here");
-    } catch(e) { }
-    
+    } catch (e) {}
+
     result = ws.queryBindings(atom("parent", "?x", "zef"));
     assert.equal(1, _.where(result, {"?x": "jan"}).length);
     assert.equal(1, _.where(result, {"?x": "antoinet"}).length);
@@ -51,11 +52,9 @@ function basic() {
 
 function derivationRule() {
     var ws = new Workspace();
-    ws.addEDBPredicate("parent");
-    ws.addIDBPredicate("ancestor");
-    ws.addRule(rule(atom("ancestor", "?a", "?b"), 
+    ws.addRule(rule(atom("ancestor", "?a", "?b"),
                     atom("parent", "?a", "?b")));
-    ws.addRule(rule(atom("ancestor", "?a", "?c"), 
+    ws.addRule(rule(atom("ancestor", "?a", "?c"),
                     atom("ancestor", "?a", "?b"),
                     atom("ancestor", "?b", "?c")));
     ws.insert(atom("parent", "ben", "jan"));
@@ -63,13 +62,13 @@ function derivationRule() {
     ws.insert(atom("parent", "jan", "zef"));
     ws.insert(atom("parent", "antoinet", "zef"));
     ws.insert(atom("parent", "antoinet", "wouter"));
-    
+
     try {
         // Inserting into IDB not allowed
         ws.insert(atom("ancestor", "zef", "pete"));
         assert(false, "Shouldn't get here");
-    } catch(e) { }
-    
+    } catch (e) {}
+
     ws.fixpoint();
     var result = ws.queryBindings(atom("ancestor", "?x", "zef"));
     assert.equal(1, _.where(result, {"?x": "jan"}).length);
@@ -84,7 +83,6 @@ function derivationRule() {
 
 function testBasicRemove() {
     var ws = new Workspace();
-    ws.addEDBPredicate("parent");
     ws.insert(atom("parent", "jan", "zef"));
     ws.insert(atom("parent", "antoinet", "zef"));
     assert(ws.contains(atom("parent", "antoinet", "zef")));
@@ -96,11 +94,9 @@ function testBasicRemove() {
 
 function testDerivedRemove() {
     var ws = new Workspace();
-    ws.addEDBPredicate("parent");
-    ws.addIDBPredicate("ancestor");
-    ws.addRule(rule(atom("ancestor", "?a", "?b"), 
+    ws.addRule(rule(atom("ancestor", "?a", "?b"),
                     atom("parent", "?a", "?b")));
-    ws.addRule(rule(atom("ancestor", "?a", "?c"), 
+    ws.addRule(rule(atom("ancestor", "?a", "?c"),
                     atom("ancestor", "?a", "?b"),
                     atom("ancestor", "?b", "?c")));
     ws.insert(atom("parent", "jan-jozef", "ben"));
@@ -118,6 +114,7 @@ function testDerivedRemove() {
     check();
     ws.fixpoint();
     check();
+
     function check() {
         assert(!ws.contains(atom("ancestor", "ben", "jan")));
         assert(!ws.contains(atom("ancestor", "ben", "zef")));
@@ -127,15 +124,13 @@ function testDerivedRemove() {
 
 function testLongTraceRemove() {
     var ws = new Workspace();
-    ws.addEDBPredicate("successor");
-    ws.addIDBPredicate("lessthan");
-    ws.addRule(rule(atom("lessthan", "?a", "?b"), 
+    ws.addRule(rule(atom("lessthan", "?a", "?b"),
                     atom("successor", "?a", "?b")));
-    ws.addRule(rule(atom("lessthan", "?a", "?c"), 
+    ws.addRule(rule(atom("lessthan", "?a", "?c"),
                     atom("lessthan", "?a", "?b"),
                     atom("lessthan", "?b", "?c")));
-    for(var i = 1; i < 10; i++) {
-        ws.insert(atom("successor", i-1, i));
+    for (var i = 1; i < 10; i++) {
+        ws.insert(atom("successor", i - 1, i));
     }
     ws.fixpoint();
     assert(ws.contains(atom("lessthan", 0, 1)));
@@ -145,6 +140,7 @@ function testLongTraceRemove() {
     check();
     ws.fixpoint();
     check();
+
     function check() {
         assert(!ws.contains(atom("lessthan", 5, 6)));
         assert(ws.contains(atom("lessthan", 0, 5)));
@@ -158,16 +154,14 @@ function testLongTraceRemove() {
 
 function testBuiltin() {
     var ws = new Workspace();
-    assert.deepEqual([{X: 30}], ws.queryBindings(atom("int:add", 10, 20, "X")));
-    assert.deepEqual([{}], ws.queryBindings(atom("int:lessThan", 10, 20, "X")));
-    assert.deepEqual([], ws.queryBindings(atom("int:lessThan", 20, 10, "X")));
-    
-    ws.addEDBPredicate("num");
-    ws.addIDBPredicate("smallerThanTen");
+    assert.deepEqual([{"?x": 30}], ws.queryBindings(atom("int:add", 10, 20, "?x")));
+    assert.deepEqual([{}], ws.queryBindings(atom("int:lessThan", 10, 20, "?x")));
+    assert.deepEqual([], ws.queryBindings(atom("int:lessThan", 20, 10, "?x")));
+
     ws.addRule(rule(atom("smallerThanTen", "?x"),
-                    atom("num", "?x"),
-                    atom("int:lessThan", "?x", 10)));
-    for(var i = 0; i < 20; i++) {
+    atom("num", "?x"),
+    atom("int:lessThan", "?x", 10)));
+    for (var i = 0; i < 20; i++) {
         ws.insert(atom("num", i));
     }
     ws.fixpoint();
@@ -181,9 +175,7 @@ function testBuiltin() {
 // TODO not done
 function testDeltaRules() {
     var ws = new Workspace();
-    ws.addEDBPredicate("original");
-    ws.addEDBPredicate("clone1");
-    ws.addRule(rule(deltaAtom("+", "clone1", "?a"), 
+    ws.addRule(rule(deltaAtom("+", "clone1", "?a"),
                     atom("original", "?a")));
     ws.insert(atom("original", 1));
     ws.fixpoint();
@@ -196,9 +188,9 @@ function testDeltaRules() {
 
 function testWildCard() {
     var ws = new Workspace();
-    ws.addEDBPredicate("successor");
-    for(var i = 1; i < 10; i++) {
-        ws.insert(atom("successor", i-1, i));
+    ws.createEDBPredicate("successor");
+    for (var i = 1; i < 10; i++) {
+        ws.insert(atom("successor", i - 1, i));
     }
     var results = ws.query(atom("successor", 2, "?"));
     assert.equal(1, results.length);
@@ -207,28 +199,26 @@ function testWildCard() {
 
 function testExecRules() {
     var ws = new Workspace();
-    ws.addEDBPredicate("successor");
-    ws.addIDBPredicate("lessthan");
-    ws.addRule(rule(atom("lessthan", "?a", "?b"), 
-                    atom("successor", "?a", "?b")));
-    ws.addRule(rule(atom("lessthan", "?a", "?c"), 
-                    atom("lessthan", "?a", "?b"),
-                    atom("lessthan", "?b", "?c")));
-    for(var i = 1; i < 10; i++) {
-        ws.insert(atom("successor", i-1, i));
+    ws.addRule(rule(atom("lessthan", "?a", "?b"),
+    atom("successor", "?a", "?b")));
+    ws.addRule(rule(atom("lessthan", "?a", "?c"),
+    atom("lessthan", "?a", "?b"),
+    atom("lessthan", "?b", "?c")));
+    for (var i = 1; i < 10; i++) {
+        ws.insert(atom("successor", i - 1, i));
     }
     ws.fixpoint();
     assert(ws.contains(atom("successor", 1, 2)));
     assert(ws.contains(atom("lessthan", 1, 2)));
-    
+
     ws.fixpointRules([rule(deltaAtom("-", "successor", "?a", "?"),
-                           atom("lessthan", "?a", 5))]);
+    atom("lessthan", "?a", 5))]);
     assert(!ws.contains(atom("successor", 1, 2)));
     assert(!ws.contains(atom("lessthan", 1, 2)));
-    
+
     // Insert everything again
-    for(i = 1; i < 10; i++) {
-        ws.insert(atom("successor", i-1, i));
+    for (i = 1; i < 10; i++) {
+        ws.insert(atom("successor", i - 1, i));
     }
     ws.fixpoint();
     assert(ws.contains(atom("successor", 1, 2)));
@@ -237,15 +227,13 @@ function testExecRules() {
 
 function testUpsert() {
     var ws = new Workspace();
-    ws.addEDBPredicate("counter");
-    ws.addEDBPredicate("age");
     ws.upsert(atom("counter", 1));
     assert(ws.contains(atom("counter", 1)));
     assert(1, ws.getPredicate("counter").count());
     ws.upsert(atom("counter", 2));
     assert(ws.contains(atom("counter", 2)));
     assert(1, ws.getPredicate("counter").count());
-    
+
     ws.upsert(atom("age", "zef", 29));
     ws.upsert(atom("age", "wouter", 25));
     assert(ws.contains(atom("age", "zef", 29)));
@@ -256,45 +244,77 @@ function testUpsert() {
     assert(2, ws.getPredicate("age").count());
 }
 
+function testEvents() {
+    var ws = new Workspace();
+    // We have to explicitly create the predicate here so that we can subscribe
+    // to it later
+    ws.createEDBPredicate("parent");
+    ws.addRule(rule(atom("ancestor", "?a", "?b"),
+                    atom("parent", "?a", "?b")));
+    ws.addRule(rule(atom("ancestor", "?a", "?c"),
+                    atom("ancestor", "?a", "?b"),
+                    atom("ancestor", "?b", "?c")));
+    var invoked = 0;
+    ws.getPredicate("parent").on("insert", function() {
+        invoked++;
+    });
+    ws.insert(atom("parent", "jan", "zef"));
+    ws.insert(atom("parent", "ben", "jan"));
+    assert.equal(2, invoked);
+    invoked = 0;
+    ws.getPredicate("ancestor").on("insert", function() {
+        invoked++;
+    });
+    ws.fixpoint();
+    assert.equal(3, invoked);
+    
+    ws = new Workspace();
+    ws.createEDBPredicate("parent");
+    invoked = 0;
+    ws.getPredicate("parent").on("insert", queryEventFilter(atom("parent", "?p", "zef"), function(atom, bindings) {
+        invoked++;
+        assert.equal("jan", bindings["?p"]);
+    }));
+    ws.insert(atom("parent", "jan", "wouter"));
+    ws.insert(atom("parent", "jan", "zef"));
+    assert.equal(1, invoked);
+}
+
 function testInsertPerformance() {
     var before = Date.now();
     var ws = new Workspace();
     var itemsToInsert = 10000;
-    ws.addEDBPredicate("successor");
-    for(var i = 1; i <= itemsToInsert; i++) {
-        ws.insert(atom("successor", i-1, i));
+    for (var i = 1; i <= itemsToInsert; i++) {
+        ws.insert(atom("successor", i - 1, i));
     }
     ws.fixpoint();
-    console.log("Inserting", itemsToInsert, "items took:", Date.now()-before, "ms");
+    console.log("Inserting", itemsToInsert, "items took:", Date.now() - before, "ms");
 }
 
 function testRemovePerformance() {
     var ws = new Workspace();
     var itemsToInsert = 10000;
-    ws.addEDBPredicate("successor");
-    for(var i = 1; i <= itemsToInsert; i++) {
-        ws.insert(atom("successor", i-1, i));
+    for (var i = 1; i <= itemsToInsert; i++) {
+        ws.insert(atom("successor", i - 1, i));
     }
     ws.fixpoint();
     var before = Date.now();
-    for(i = 1; i <= itemsToInsert; i++) {
-        ws.remove(atom("successor", i-1, i));
+    for (i = 1; i <= itemsToInsert; i++) {
+        ws.remove(atom("successor", i - 1, i));
     }
-    console.log("Removing", itemsToInsert, "items took:", Date.now()-before, "ms");
+    console.log("Removing", itemsToInsert, "items took:", Date.now() - before, "ms");
 }
 
 function testRulePerformance() {
     var ws = new Workspace();
-    ws.addEDBPredicate("parent");
-    ws.addIDBPredicate("ancestor");
-    ws.addRule(rule(atom("ancestor", "?a", "?b"), 
+    ws.addRule(rule(atom("ancestor", "?a", "?b"),
                     atom("parent", "?a", "?b")));
-    ws.addRule(rule(atom("ancestor", "?a", "?c"), 
+    ws.addRule(rule(atom("ancestor", "?a", "?c"),
                     atom("ancestor", "?a", "?b"),
                     atom("ancestor", "?b", "?c")));
-    var numParents = 40;
-    for(var i = 0; i < numParents; i++) {
-        ws.insert(atom("parent", "p" + i, "p" + (i+1)));
+    var numParents = 20;
+    for (var i = 0; i < numParents; i++) {
+        ws.insert(atom("parent", "p" + i, "p" + (i + 1)));
     }
     var before = Date.now();
     ws.fixpoint();
@@ -304,11 +324,11 @@ function testRulePerformance() {
 
 function testUpsertPerformance() {
     var ws = new Workspace();
-    ws.addEDBPredicate("age");
+    ws.createEDBPredicate("age");
     var names = ["pete", "jan", "steve", "roger", "hank", "frenkel", "john", "anne", "emma", "samantha"];
     var before = Date.now();
     names.forEach(function(name) {
-        for(var i = 0; i < 1000; i++) {
+        for (var i = 0; i < 1000; i++) {
             ws.upsert(atom("age", name + i, 20));
         }
     });

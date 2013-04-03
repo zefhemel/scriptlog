@@ -1,0 +1,28 @@
+<html>
+<body>
+<script src="trie.js"></script>
+<script src="tiny.js"></script>
+<script>
+    tiny.makeGlobal();
+    
+    var ws = new Workspace();
+    ws.addEDBPredicate("parent");
+    ws.addIDBPredicate("ancestor");
+    ws.addRule(rule(atom("ancestor", "?a", "?b"), 
+                    atom("parent", "?a", "?b")));
+    ws.addRule(rule(atom("ancestor", "?a", "?c"), 
+                    atom("ancestor", "?a", "?b"),
+                    atom("ancestor", "?b", "?c")));
+    var numParents = 20;
+    for(var i = 0; i < numParents; i++) {
+        ws.insert(atom("parent", "p" + i, "p" + (i+1)));
+    }
+    var before = Date.now();
+    ws.fixpoint();
+    if(!ws.contains(atom("ancestor", "p2", "p10"))) {
+        throw Error("Fail");
+    }
+    console.log("Fixpointing on", numParents, "parents took: ", Date.now() - before, "ms");
+</script>
+</body>
+</html>
