@@ -6,6 +6,8 @@ var queryEventFilter = require("./tiny").queryEventFilter;
 var assert = require("assert");
 var _ = require("underscore");
 
+require("./builtin");
+
 basic();
 derivationRule();
 testBasicRemove();

@@ -46,6 +46,7 @@ var tiny = (function() {
                 dest[p] = source[p];
             }
         }
+        return dest;
     }
     
     /**
@@ -200,19 +201,46 @@ var tiny = (function() {
         /**
          * @return array of mappings (objects)
          */
-        queryBindings: function(query) {
+        queryBindings: function(query, currentBindings) {
             var facts = this.facts;
             var hashToFact = this.hashToFact;
             var results = [];
-            var prefixMatches = facts.prefixMatches(getQueryPrefix(query));
-            for (var i = 0; i < prefixMatches.length; i++) {
-                var atom = hashToFact[prefixMatches[i]];
-                var unification = unify(query, atom);
-                if (unification) {
-                    results.push(unification);
+            var resultHash = {};
+            
+            var prefix = getQueryPrefix(query);
+            if(currentBindings && currentBindings.length > 0) {
+                // Let's check if this partial evaluation is going to help
+                // Assumption: each binding binds the same variables
+                var boundQuery = substitute(query, currentBindings[0]);
+                var boundPrefix = getQueryPrefix(boundQuery);
+                if(boundPrefix > prefix) {
+                    // Ok, new prefix is longer (= more specific = faster lookup)
+                    currentBindings.forEach(function(binding) {
+                        var boundQuery = substitute(query, binding);
+                        scan(getQueryPrefix(boundQuery));
+                    });
+                } else {
+                    scan(prefix);
                 }
+            } else {
+                scan(prefix);
             }
             return results;
+            
+            function scan(prefix) {
+                var prefixMatches = facts.prefixMatches(prefix);
+                for (var i = 0; i < prefixMatches.length; i++) {
+                    var atom = hashToFact[prefixMatches[i]];
+                    var unification = unify(query, atom);
+                    // unify returns binding object, let's JSON stringify it to get a hash
+                    var hash = JSON.stringify(unification);
+                    if (unification && !resultHash[hash]) {
+                        results.push(unification);
+                        // Make sure we don't get duplicates
+                        resultHash[hash] = true;
+                    }
+                }
+            }
         },
         getFactByHashCode: function(hashCode) {
             return this.hashToFact[hashCode];
@@ -329,23 +357,16 @@ var tiny = (function() {
     BuiltinPredicate.prototype.getFactByHashCode = function() {
         return null;
     };
+    
+    var builtinPredicates = {};
+    
+    function registerBuiltin(name, callback) {
+        builtinPredicates[name] = new BuiltinPredicate(name, callback);
+    }
 
     function Workspace() {
         this.installedRules = [];
-        this.predicates = {
-            "int:add": new BuiltinPredicate("int:add", function(query) {
-                var result = {};
-                result[query[3]] = query[1] + query[2];
-                return [result];
-            }),
-            "int:lessThan": new BuiltinPredicate("int:lessThan", function(query, binding) {
-                if (query[1] < query[2]) {
-                    return [binding];
-                } else {
-                    return [];
-                }
-            }),
-        };
+        this.predicates = extend({}, builtinPredicates);
     }
 
     Workspace.prototype = {
@@ -644,6 +665,7 @@ var tiny = (function() {
         deltaAtom: deltaAtom,
         rule: rule,
         makeGlobal: makeGlobal,
+        registerBuiltin: registerBuiltin,
         queryEventFilter: queryEventFilter
     };
 })();
