@@ -1,9 +1,9 @@
 /*global tiny:true*/
 (function() {
     if (typeof require !== "undefined") {
-        tiny = require("./tiny");
+        scriptlog = require("./scriptlog");
     }
-    var registerBuiltin = tiny.registerBuiltin;
+    var registerBuiltin = scriptlog.registerBuiltin;
 
     registerBuiltin("int:add", function(query) {
         var result = {};

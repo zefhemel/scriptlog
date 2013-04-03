@@ -1,8 +1,8 @@
-var Workspace = require("./tiny").Workspace;
-var atom = require("./tiny").atom;
-var rule = require("./tiny").rule;
-var deltaAtom = require("./tiny").deltaAtom;
-var queryEventFilter = require("./tiny").queryEventFilter;
+var Workspace = require("./scriptlog").Workspace;
+var atom = require("./scriptlog").atom;
+var rule = require("./scriptlog").rule;
+var deltaAtom = require("./scriptlog").deltaAtom;
+var queryEventFilter = require("./scriptlog").queryEventFilter;
 var assert = require("assert");
 var _ = require("underscore");
 
